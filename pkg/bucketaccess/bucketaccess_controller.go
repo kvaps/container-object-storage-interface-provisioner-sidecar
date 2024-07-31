@@ -326,9 +326,11 @@ func (bal *BucketAccessListener) Update(ctx context.Context, old, new *v1alpha1.
 	klog.V(3).InfoS("Update BucketAccess",
 		"name", old.ObjectMeta.Name)
 
+	var err error
+
 	bucketAccess := new.DeepCopy()
 	if !bucketAccess.GetDeletionTimestamp().IsZero() {
-		err := bal.deleteBucketAccessOp(ctx, bucketAccess)
+		err = bal.deleteBucketAccessOp(ctx, bucketAccess)
 		if err != nil {
 			return bal.recordError(bucketAccess, v1.EventTypeWarning, events.FailedRevokeAccess, err)
 		}

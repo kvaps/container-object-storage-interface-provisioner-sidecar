@@ -269,8 +269,10 @@ func (b *BucketListener) Update(ctx context.Context, old, new *v1alpha1.Bucket) 
 
 	bucket := new.DeepCopy()
 
+	var err error
+
 	if !bucket.GetDeletionTimestamp().IsZero() {
-		err := b.handleBucketDeletion(ctx, bucket)
+		err = b.handleBucketDeletion(ctx, bucket)
 		if err != nil {
 			return b.recordError(bucket, v1.EventTypeWarning, events.FailedDeleteBucket, err)
 		}
