@@ -269,52 +269,16 @@ func (b *BucketListener) Update(ctx context.Context, old, new *v1alpha1.Bucket) 
 
 	bucket := new.DeepCopy()
 
-	var err error
-
 	if !bucket.GetDeletionTimestamp().IsZero() {
-		if controllerutil.ContainsFinalizer(bucket, consts.BABucketFinalizer) {
-			bucketClaimNs := bucket.Spec.BucketClaim.Namespace
-			bucketClaimName := bucket.Spec.BucketClaim.Name
-			bucketAccessList, err := b.bucketAccesses(bucketClaimNs).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				klog.V(3).ErrorS(err, "Error fetching BucketAccessList",
-					"bucket", bucket.ObjectMeta.Name)
-				return err
-			}
-
-			for _, bucketAccess := range bucketAccessList.Items {
-				if strings.EqualFold(bucketAccess.Spec.BucketClaimName, bucketClaimName) {
-					err = b.bucketAccesses(bucketClaimNs).Delete(ctx, bucketAccess.Name, metav1.DeleteOptions{})
-					if err != nil {
-						klog.V(3).ErrorS(err, "Error deleting BucketAccess",
-							"name", bucketAccess.Name,
-							"bucket", bucket.ObjectMeta.Name)
-						return err
-					}
-				}
-			}
-
-			klog.V(5).Infof("Successfully deleted dependent bucketAccess of bucket:%s", bucket.ObjectMeta.Name)
-
-			controllerutil.RemoveFinalizer(bucket, consts.BABucketFinalizer)
-			klog.V(5).Infof("Successfully removed finalizer: %s of bucket: %s", consts.BABucketFinalizer, bucket.ObjectMeta.Name)
-		}
-
-		if controllerutil.ContainsFinalizer(bucket, consts.BucketFinalizer) {
-			err = b.deleteBucketOp(ctx, bucket)
-			if err != nil {
-				return b.recordError(bucket, v1.EventTypeWarning, events.FailedDeleteBucket, err)
-			}
-
-			controllerutil.RemoveFinalizer(bucket, consts.BucketFinalizer)
-			klog.V(5).Infof("Successfully removed finalizer: %s of bucket: %s", consts.BucketFinalizer, bucket.ObjectMeta.Name)
-		}
-
-		_, err = b.buckets().Update(ctx, bucket, metav1.UpdateOptions{})
+		err := b.handleBucketDeletion(ctx, bucket)
 		if err != nil {
-			klog.V(3).ErrorS(err, "Error updating bucket after removing finalizers",
-				"bucket", bucket.ObjectMeta.Name)
-			return err
+			return b.recordError(bucket, v1.EventTypeWarning, events.FailedDeleteBucket, err)
+		}
+	} else {
+		// Trigger the Add logic to ensure that the Bucket is properly reconciled
+		err := b.Add(ctx, bucket)
+		if err != nil {
+			return b.recordError(bucket, v1.EventTypeWarning, events.FailedCreateBucket, err)
 		}
 	}
 
