@@ -72,6 +72,13 @@ func (b *BucketListener) Add(ctx context.Context, inputBucket *v1alpha1.Bucket) 
 	klog.V(3).InfoS("Add Bucket",
 		"name", bucket.ObjectMeta.Name)
 
+	if !bucket.GetDeletionTimestamp().IsZero() {
+		// If the bucket has a deletion timestamp, handle it as a deletion
+		klog.V(3).InfoS("Bucket has deletion timestamp, handling deletion",
+			"name", bucket.ObjectMeta.Name)
+		return b.handleBucketDeletion(ctx, bucket)
+	}
+
 	if bucket.Spec.BucketClassName == "" {
 		return b.recordError(inputBucket, v1.EventTypeWarning, events.FailedCreateBucket, fmt.Errorf("%w for Bucket %v", consts.ErrUndefinedBucketClassName, bucket.Name))
 	}
@@ -89,7 +96,6 @@ func (b *BucketListener) Add(ctx context.Context, inputBucket *v1alpha1.Bucket) 
 			"bucket", bucket.ObjectMeta.Name,
 			"driver", bucket.Spec.DriverName,
 		)
-
 		return nil
 	}
 
@@ -172,7 +178,7 @@ func (b *BucketListener) Add(ctx context.Context, inputBucket *v1alpha1.Bucket) 
 	}
 
 	controllerutil.AddFinalizer(bucket, consts.BucketFinalizer)
-	if bucket, err = b.buckets().Update(ctx, bucket, metav1.UpdateOptions{}); err != nil {
+	if bucket, err := b.buckets().Update(ctx, bucket, metav1.UpdateOptions{}); err != nil {
 		klog.V(3).ErrorS(err, "Failed to update bucket finalizers", "bucket", bucket.ObjectMeta.Name)
 		return b.recordError(bucket, v1.EventTypeWarning, events.FailedCreateBucket,
 			fmt.Errorf("failed to update bucket finalizers: %w", err))
@@ -196,6 +202,59 @@ func (b *BucketListener) Add(ctx context.Context, inputBucket *v1alpha1.Bucket) 
 		"bucket", bucket.ObjectMeta.Name,
 		"bucketID", bucketID,
 		"ns", bucket.ObjectMeta.Namespace)
+
+	return nil
+}
+
+// handleBucketDeletion handles the deletion of a bucket
+func (b *BucketListener) handleBucketDeletion(ctx context.Context, bucket *v1alpha1.Bucket) error {
+	klog.V(3).InfoS("Handle Bucket deletion",
+		"name", bucket.ObjectMeta.Name)
+
+	if controllerutil.ContainsFinalizer(bucket, consts.BABucketFinalizer) {
+		bucketClaimNs := bucket.Spec.BucketClaim.Namespace
+		bucketClaimName := bucket.Spec.BucketClaim.Name
+		bucketAccessList, err := b.bucketAccesses(bucketClaimNs).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			klog.V(3).ErrorS(err, "Error fetching BucketAccessList",
+				"bucket", bucket.ObjectMeta.Name)
+			return err
+		}
+
+		for _, bucketAccess := range bucketAccessList.Items {
+			if strings.EqualFold(bucketAccess.Spec.BucketClaimName, bucketClaimName) {
+				err = b.bucketAccesses(bucketClaimNs).Delete(ctx, bucketAccess.Name, metav1.DeleteOptions{})
+				if err != nil {
+					klog.V(3).ErrorS(err, "Error deleting BucketAccess",
+						"name", bucketAccess.Name,
+						"bucket", bucket.ObjectMeta.Name)
+					return err
+				}
+			}
+		}
+
+		klog.V(5).Infof("Successfully deleted dependent bucketAccess of bucket:%s", bucket.ObjectMeta.Name)
+
+		controllerutil.RemoveFinalizer(bucket, consts.BABucketFinalizer)
+		klog.V(5).Infof("Successfully removed finalizer: %s of bucket: %s", consts.BABucketFinalizer, bucket.ObjectMeta.Name)
+	}
+
+	if controllerutil.ContainsFinalizer(bucket, consts.BucketFinalizer) {
+		err := b.deleteBucketOp(ctx, bucket)
+		if err != nil {
+			return b.recordError(bucket, v1.EventTypeWarning, events.FailedDeleteBucket, err)
+		}
+
+		controllerutil.RemoveFinalizer(bucket, consts.BucketFinalizer)
+		klog.V(5).Infof("Successfully removed finalizer: %s of bucket: %s", consts.BucketFinalizer, bucket.ObjectMeta.Name)
+	}
+
+	_, err := b.buckets().Update(ctx, bucket, metav1.UpdateOptions{})
+	if err != nil {
+		klog.V(3).ErrorS(err, "Error updating bucket after removing finalizers",
+			"bucket", bucket.ObjectMeta.Name)
+		return err
+	}
 
 	return nil
 }

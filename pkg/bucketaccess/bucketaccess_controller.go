@@ -69,6 +69,13 @@ func NewBucketAccessListener(driverName string, client cosi.ProvisionerClient) *
 func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1alpha1.BucketAccess) error {
 	bucketAccess := inputBucketAccess.DeepCopy()
 
+	if !bucketAccess.GetDeletionTimestamp().IsZero() {
+		// If the bucketAccess has a deletion timestamp, handle it as a deletion
+		klog.V(3).InfoS("BucketAccess has deletion timestamp, handling deletion",
+			"name", bucketAccess.ObjectMeta.Name)
+		return bal.handleBucketAccessDeletion(ctx, bucketAccess)
+	}
+
 	if bucketAccess.Status.AccessGranted && bucketAccess.Status.AccountID != "" {
 		klog.V(3).InfoS("BucketAccess already exists", bucketAccess.ObjectMeta.Name)
 		return nil
@@ -296,6 +303,16 @@ func (bal *BucketAccessListener) Add(ctx context.Context, inputBucketAccess *v1a
 			"bucket", bucket.ObjectMeta.Name)
 		return bal.recordError(inputBucketAccess, v1.EventTypeWarning, events.FailedGrantAccess,
 			fmt.Errorf("failed to update Status on BucketAccess %s: %w", bucketAccess.ObjectMeta.Name, err))
+	}
+
+	return nil
+}
+
+// handleBucketAccessDeletion handles the deletion logic for a BucketAccess
+func (bal *BucketAccessListener) handleBucketAccessDeletion(ctx context.Context, bucketAccess *v1alpha1.BucketAccess) error {
+	err := bal.deleteBucketAccessOp(ctx, bucketAccess)
+	if err != nil {
+		return bal.recordError(bucketAccess, v1.EventTypeWarning, events.FailedRevokeAccess, err)
 	}
 
 	return nil
